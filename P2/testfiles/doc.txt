@@ -1,0 +1,20 @@
+{[("'hello@%^'"
+{/@hello}
+he@llo
+almost-correct
+almost-korrect
+almest-kerrect
+WiFi
+WIFI
+wifi
+hello
+heLlo
+The bueatiful sunset glowed orangey across the horizen, casting long shadows
+over the sand. The waves lapped gently at the shore, creating a relaxing 
+atmospere. Seagulls sqwaked overhead as they soared through the sky, 
+searching for their evening meal. It was a tranquil scene, perfect for 
+contemplation and reflaction.
+4@
+ikorrect     inkorrect
+
+inkorrect
