@@ -7,9 +7,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/wait.h>
+#include <glob.h>
 
-#define BUFFER_SIZE 4
-
+#define BUFFER_SIZE 128
 
 char* redirection(char* command, int index)
 {
@@ -32,6 +32,67 @@ char* redirection(char* command, int index)
     return file;
 }
 
+void freeTokens(char** tokens, int numArgs)
+{
+    for (int i = 0; i < numArgs; i++){
+        free(tokens[i]);
+    }
+    free(tokens);
+}
+
+void cd(char* path)
+{
+    if (chdir(path) != 0){
+        perror("No such file or directory\n");
+    }
+}
+
+void pwd()
+{
+    char* cwd = getcwd(NULL, 0);
+    if (cwd == NULL){
+        perror("Error getting current working directory\n");
+    }
+    printf("%s\n", cwd);
+    free(cwd);
+}
+
+char* searchExec(char* executable){
+    char** path = (char**) malloc(3 * sizeof(char*));
+    if (path == NULL){
+        perror("Error allocating memory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    path[0] = (char*) malloc((15 + strlen(executable) +1) * sizeof(char));
+    memcpy(path[0], "/usr/local/bin/", 15);
+    memcpy(path[0] + 15, executable, strlen(executable));
+    path[0][15 + strlen(executable)] = '\0';
+
+    path[1] = (char*) malloc((9 + strlen(executable) +1) * sizeof(char));
+    memcpy(path[1], "/usr/bin/", 9);
+    memcpy(path[1] + 9, executable, strlen(executable));
+    path[1][9 + strlen(executable)] = '\0';
+
+    path[2] = (char*) malloc((5 + strlen(executable) +1) * sizeof(char));
+    memcpy(path[2], "/bin/", 5);
+    memcpy(path[2] + 5, executable, strlen(executable));
+    path[2][5 + strlen(executable)] = '\0';
+
+    for (int i = 0; i < 3; i++){
+        if(access(path[i], F_OK) == 0){
+            char* pathToExec = strdup(path[i]);
+            for (int j = 0; j < 3; j++){
+                free(path[j]);
+            }
+            free(path);
+            return pathToExec;
+        }
+    }
+    return NULL;
+}
+
+
 void parseCommand(char* command)
 {
     char* inputFile = NULL;
@@ -39,29 +100,109 @@ void parseCommand(char* command)
 
     for (int i = 0; i < strlen(command); i++){
         if (command[i] == '<'){
-            inputFile = redirection(command, i); // rememeber to free this
+            inputFile = redirection(command, i);
         }else if (command[i] == '>'){
-            outputFile = redirection(command, i); // rememeber to free this
+            outputFile = redirection(command, i);
         }
     }
 
     int numArgs = 0;
     char delim[]=" \t\r\n\v\f\0";
     for (int i = 0; i < strlen(command)+1; i++){
-        if (strchr(delim, command[i]) && isalnum(command[i-1])){
+        if (strchr(delim, command[i]) && !isspace(command[i-1])){
             numArgs++;
         }
     }
 
-    char* tokens[numArgs+1];
+    char** tokens = (char**) malloc((numArgs + 1) * sizeof(char*));
     char* token = strtok(command, " ");
     int i = 0;
     while (token != NULL){
-        tokens[i] = token;
+        if (strchr(token, '*')){
+
+            glob_t glob_result;
+            
+            glob(token, GLOB_TILDE, NULL, &glob_result);
+
+            if (glob_result.gl_pathc == 0){
+                tokens[i] = strdup(token);
+                token = strtok(NULL, " ");
+                i++;
+                globfree(&glob_result);
+                continue;
+            }
+
+            numArgs += glob_result.gl_pathc-1;
+
+            tokens = (char**) realloc(tokens, (numArgs+1) * sizeof(char*));
+            for (unsigned int j = 0; j < glob_result.gl_pathc; j++){
+                tokens[i] = strdup(glob_result.gl_pathv[j]);
+                i++;
+            }
+
+            globfree(&glob_result);
+            token = strtok(NULL, " ");
+            continue;
+        }
+
+        tokens[i] = strdup(token);
         token = strtok(NULL, " ");
         i++;
     }
     tokens[numArgs] = NULL;
+
+    if (strcmp(tokens[0], "cd") == 0){
+        if (numArgs != 2){
+            perror("Invalid number of arguments\n");
+            freeTokens(tokens, numArgs);
+            return;
+        }
+        cd(tokens[1]);
+        freeTokens(tokens, numArgs);
+        return;
+    }
+
+    if (strcmp(tokens[0], "pwd") == 0){
+        if (numArgs != 1){
+            perror("Invalid number of arguments\n");
+            freeTokens(tokens, numArgs);
+            return;
+        }
+
+        pwd();
+        freeTokens(tokens, numArgs);
+        return;
+    }
+
+    if (strcmp(tokens[0], "which") == 0){
+        if (numArgs != 2){
+            perror("Invalid number of arguments\n");
+            freeTokens(tokens, numArgs);
+            return;
+        }
+        char* pathToExec = searchExec(tokens[1]);
+
+        if (pathToExec != NULL){
+            printf("%s\n", pathToExec);
+        }
+
+        free(pathToExec);
+        freeTokens(tokens, numArgs);
+        return;
+    }
+
+    char* exec = NULL;
+    if (strchr(tokens[0], '/')){
+        exec = strdup(tokens[0]);
+    }else{
+        exec = searchExec(tokens[0]);
+        if (exec == NULL){
+            perror("Error finding executable\n");
+            freeTokens(tokens, numArgs);
+            return;
+        }
+    }
+
 
     pid_t pid = fork();
     if (pid < 0){
@@ -69,14 +210,44 @@ void parseCommand(char* command)
         exit(EXIT_FAILURE);
     }
     if (pid == 0){
-        execvp(tokens[0], tokens);
+        if (inputFile != NULL){
+            int input_fd = open(inputFile, O_RDONLY);
+            if (input_fd == -1){
+                perror("Error opening input file\n");
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(input_fd, STDIN_FILENO);
+            close(input_fd);
+            free(inputFile);
+        }
+
+        if (outputFile != NULL){
+            int output_fd = open(outputFile, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+            if (output_fd == -1){
+                perror("Error opening output file\n");
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(output_fd, STDOUT_FILENO);
+            close(output_fd);
+            free(outputFile);
+        }
+
+        execvp(exec, tokens);
+        free(exec);
     }
+
     int status;
     wait(&status);
-    if (WIFEXITED(status)){
-        printf("Child process exited with status %d\n", WEXITSTATUS(status));
-    }
-    printf("Child process has finished executing.\n");
+
+    // if (!WIFEXITED(status)){
+    //     printf("Child process exited with status %d\n", WEXITSTATUS(status));
+    // }
+
+    // child process done
+
+    freeTokens(tokens, numArgs);
 }
 
 void program(int fd)
@@ -133,7 +304,7 @@ void program(int fd)
             }
         }
     }else{
-        
+
         // run batch mode
     }
 
