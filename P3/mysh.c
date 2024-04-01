@@ -164,18 +164,23 @@ GlobExp* ExpandPattern (char* file_pattern){
                 exit(EXIT_FAILURE);
             }
 
+            if (path == NULL){
+                pattern_matches->globv[count] = strdup(entry->d_name);
+                count++;
+                continue;
+            } else {
+                size_t path_len = strlen(path);
+                size_t file_len = strlen(entry->d_name);
+                size_t total_path_length = path_len + file_len + 2;
 
-            size_t path_len = (path == NULL ? 0 : strlen(path));
-            size_t file_len = strlen(entry->d_name);
-            size_t total_path_length = path_len + file_len + 2;
+                pattern_matches->globv[count] = (char*) malloc(total_path_length * sizeof(char));
+                memcpy(pattern_matches->globv[count], path, path_len);
+                pattern_matches->globv[count][path_len] = '/';
+                memcpy(pattern_matches->globv[count] + path_len + 1, entry->d_name, file_len);
+                pattern_matches->globv[count][total_path_length-1] = '\0';
 
-            pattern_matches->globv[count] = (char*) malloc(total_path_length * sizeof(char));
-            memcpy(pattern_matches->globv[count], path, strlen(path_len));
-            pattern_matches->globv[count][strlen(path)] = '/';
-            memcpy(pattern_matches->globv[count] + path_len + 1, entry->d_name, file_len);
-            pattern_matches->globv[count][total_path_length-1] = '\0';
-
-            count++;
+                count++;
+            }
         }
     }
 
@@ -414,7 +419,13 @@ void parseCommand(char* command)
         }
     }
 
-    int exit_status; // variable to store the exit status of the child process
+
+    /* When the pipe_flag is set to 0 (no pipes in command) we execute the command
+       normally with just 1 child process, else we create two child processes and
+       execute both commands seprately with first child output being pipes to the 
+       other child */
+
+    int exit_status; // variable to store the exit status of the last child process
 
     if (pipe_flag == 0){
 
@@ -455,25 +466,29 @@ void parseCommand(char* command)
                 perror("Error executing command");
                 exit(EXIT_FAILURE);
             } else {
-                free(pathToExec);
+
+                free(pathToExec); // freeing the path to the executable file after use
+
             }
         }
 
         wait(&exit_status); // wait for the child process to finish and store the exit status
         freeTokens(tokens, numArgs[0]); // free the tokens
 
-    } else {
+    } else { // executed if pipe_flag is set to 1
 
-        char** tokens = tokenize(command, numArgs[0]);
-        char** pipetokens = tokenize(command + flag + 1, numArgs[1]);
-        int i;
-        int pipefd[2];
+        char** tokens = tokenize(command, numArgs[0]); // argument list for first job
+        char** pipetokens = tokenize(command + flag + 1, numArgs[1]); // argument list for second job
+
+        int pipefd[2]; // the pipe
 
         if (pipe(pipefd) == -1){
             perror("Error creating pipe");
             exit(EXIT_FAILURE);
         }
 
+        int i;
+        /* FIRST CHILD PROCESS */
         if ((i = isBuiltin(tokens[0])) != 0){
             int save_stdout = dup(STDOUT_FILENO);
 
@@ -482,7 +497,7 @@ void parseCommand(char* command)
 
             BuiltInFunctions(tokens, numArgs[0], i);
 
-            dup2(save_stdout, STDOUT_FILENO);
+            dup2(save_stdout, STDOUT_FILENO); // restoring standard output
             close(save_stdout);
 
         } else {
@@ -525,12 +540,12 @@ void parseCommand(char* command)
         if ((i = isBuiltin(pipetokens[0])) != 0){
             int save_stdin = dup(STDIN_FILENO);
             
-            dup2(pipefd[0], STDIN_FILENO);
+            dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to the read end of pipe
             close(pipefd[0]);
 
             BuiltInFunctions(pipetokens, numArgs[1], i);
 
-            dup2(save_stdin, STDIN_FILENO);
+            dup2(save_stdin, STDIN_FILENO); // restore standard input
             close(save_stdin);
 
         } else {
@@ -548,6 +563,8 @@ void parseCommand(char* command)
             }
 
             if (pid == 0){
+                /* Redirecting pipes before files allows file redirection to take precedence*/
+
                 dup2(pipefd[0], STDIN_FILENO);
                 close(pipefd[0]);
 
