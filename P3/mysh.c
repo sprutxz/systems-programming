@@ -164,11 +164,16 @@ GlobExp* ExpandPattern (char* file_pattern){
                 exit(EXIT_FAILURE);
             }
 
-            pattern_matches->globv[count] = (char*) malloc(strlen(path) + strlen(entry->d_name) + 2);
-            memcpy(pattern_matches->globv[count], path, strlen(path));
+
+            size_t path_len = (path == NULL ? 0 : strlen(path));
+            size_t file_len = strlen(entry->d_name);
+            size_t total_path_length = path_len + file_len + 2;
+
+            pattern_matches->globv[count] = (char*) malloc(total_path_length * sizeof(char));
+            memcpy(pattern_matches->globv[count], path, strlen(path_len));
             pattern_matches->globv[count][strlen(path)] = '/';
-            memcpy(pattern_matches->globv[count] + strlen(path) + 1, entry->d_name, strlen(entry->d_name));
-            pattern_matches->globv[count][strlen(path) + strlen(entry->d_name) + 1] = '\0';
+            memcpy(pattern_matches->globv[count] + path_len + 1, entry->d_name, file_len);
+            pattern_matches->globv[count][total_path_length-1] = '\0';
 
             count++;
         }
