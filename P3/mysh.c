@@ -5,11 +5,25 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <sys/wait.h>
 #include <glob.h>
+#include <dirent.h>
 
 #define BUFFER_SIZE 128
+
+typedef struct glob_expansion {
+    char** globv;
+    int globc;
+} GlobExp;
+
+void freeGlobExp (GlobExp* pattern_matches)
+{
+    for (int i = 0; i < pattern_matches->globc; i++){
+        free(pattern_matches->globv[i]);
+    }
+    free(pattern_matches->globv);
+    free(pattern_matches);
+}
 
 char* ExtractRedirectionFile(char* command, int index)
 {
@@ -68,42 +82,136 @@ char* BareNameSearch (char* executable)
     return NULL;
 }
 
+int matchPattern (char* pattern, char* file)
+{
+    char* ptr1 = pattern;
+    char* ptr2 = file;
+
+    while (*ptr1 != '\0' && *ptr2 != '\0'){
+        if (*ptr1 == '*'){
+            ptr1++;
+            if (*ptr1 == '\0'){
+                return 1;
+            }
+
+            while (*ptr2 != *ptr1){
+                ptr2++;
+                if (*ptr2 == '\0'){
+                    return 0;
+                }
+            }
+
+        }else if (*ptr1 == *ptr2){
+            ptr1++;
+            ptr2++;
+        }else{
+            return 0;
+        }
+    }
+    if (*ptr1 == *ptr2){
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+GlobExp* ExpandPattern (char* file_pattern){
+    GlobExp* pattern_matches = (GlobExp*) malloc(sizeof(GlobExp));
+    pattern_matches->globv = NULL;
+    pattern_matches->globc = 0;
+
+    char* ptr = NULL;
+    char* path = NULL;
+    ptr = strrchr(file_pattern, '/');
+    DIR* dir;
+    if (ptr != NULL){
+        path = (char*) malloc(ptr - file_pattern + 1);
+        memcpy(path, file_pattern, ptr - file_pattern);
+        path[ptr - file_pattern] = '\0';
+
+        if ((dir = opendir(path)) == NULL){
+            perror("Error opening directory\n");
+            exit(EXIT_FAILURE);
+        }
+        
+    } else {
+
+        if ((dir = opendir(".")) == NULL){
+            perror("Error opening directory\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    char* pattern = (ptr == NULL ? file_pattern : ptr + 1);
+
+    struct dirent* entry;
+    int count = 0;
+    while ((entry = readdir(dir)) != NULL){
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0){
+            continue;
+        }
+
+        if (entry->d_type != DT_REG){
+            continue;
+        }
+
+        if (matchPattern(pattern, entry->d_name)){
+            pattern_matches->globc++;
+
+            pattern_matches->globv = (char**) realloc(pattern_matches->globv, pattern_matches->globc * sizeof(char*));
+            if (pattern_matches->globv == NULL){
+                perror("Error allocating memory\n");
+                exit(EXIT_FAILURE);
+            }
+
+            pattern_matches->globv[count] = (char*) malloc(strlen(path) + strlen(entry->d_name) + 2);
+            memcpy(pattern_matches->globv[count], path, strlen(path));
+            pattern_matches->globv[count][strlen(path)] = '/';
+            memcpy(pattern_matches->globv[count] + strlen(path) + 1, entry->d_name, strlen(entry->d_name));
+            pattern_matches->globv[count][strlen(path) + strlen(entry->d_name) + 1] = '\0';
+
+            count++;
+        }
+    }
+
+    if (pattern_matches->globc == 0){
+        pattern_matches->globc = 1;
+        pattern_matches->globv = (char**) malloc(sizeof(char*));
+        pattern_matches->globv[0] = strdup(file_pattern);
+    }
+
+    closedir(dir);
+    return pattern_matches;
+}
+
 char** tokenize (char* command, int numArgs)
 {
     char** tokens = (char**) malloc((numArgs + 1) * sizeof(char*));
-    char* token = strtok(command, " ");
     int i = 0;
+
+    char* token = strtok(command, " ");
     while (token != NULL){
         if (strchr(token, '*')){
 
-            glob_t glob_result;
-            
-            glob(token, GLOB_TILDE, NULL, &glob_result);
+            GlobExp* pattern_matches = ExpandPattern(token);
 
-            if (glob_result.gl_pathc == 0){
-                tokens[i] = strdup(token);
-                token = strtok(NULL, " ");
-                i++;
-                globfree(&glob_result);
-                continue;
-            }
+            numArgs += pattern_matches->globc - 1;
 
-            numArgs += glob_result.gl_pathc-1;
-
-            tokens = (char**) realloc(tokens, (numArgs+1) * sizeof(char*));
+            tokens = (char**) realloc(tokens, (numArgs + 1) * sizeof(char*));
             if (tokens == NULL){
                 perror("Error allocating memory\n");
                 exit(EXIT_FAILURE);
             }
 
-            for (unsigned int j = 0; j < glob_result.gl_pathc; j++){
-                tokens[i] = strdup(glob_result.gl_pathv[j]);
+            for (int j = 0; j < pattern_matches->globc; j++){
+                tokens[i] = strdup(pattern_matches->globv[j]);
                 i++;
             }
 
-            globfree(&glob_result);
+            freeGlobExp(pattern_matches);
             token = strtok(NULL, " ");
             continue;
+
         }
 
         tokens[i] = strdup(token);
@@ -141,82 +249,86 @@ int isBuiltin (char* cmd)
 
 }
 
-void cd(char* path)
+void BuiltInFunctions (char** args, int numArgs, int index)
 {
-    if (chdir(path) != 0){
-        perror("No such file or directory\n");
+    switch(index){
+        case 1:
+            if (numArgs != 2){
+                perror("Invalid number of arguments\n");
+                break;
+            }
+            if (chdir(args[1]) != 0){
+                perror("Error changing directory");
+            }
+            break;
+
+        case 2:
+            if (numArgs != 1){
+                perror("Invalid number of arguments\n");
+                break;
+            }
+
+            char* cwd = getcwd(NULL, 0);
+            if (cwd == NULL){
+                perror("Error getting current working directory\n");
+            }
+
+            write(STDOUT_FILENO, cwd, strlen(cwd));
+            write(STDOUT_FILENO, "\n", 1);
+            free(cwd);
+
+            break;
+
+        case 3:
+            if (numArgs != 2){
+                perror("Invalid number of arguments\n");
+                break;
+            }
+            char* pathToExec = BareNameSearch(args[1]);
+
+            if (pathToExec != NULL){
+            write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
+            write(STDOUT_FILENO, "\n", 1);
+            }
+
+            free(pathToExec);
+            break;
+        
+        default:
+            break;
     }
-}
-
-void pwd()
-{
-    char* cwd = getcwd(NULL, 0);
-    if (cwd == NULL){
-        perror("Error getting current working directory\n");
-    }
-    write(STDOUT_FILENO, cwd, strlen(cwd));
-    write(STDOUT_FILENO, "\n", 1);
-    free(cwd);
-}
-
-int BuiltInFunctions (char** args, int numArgs, int index)
-{
-    if (index == 1){
-        if (numArgs != 2){
-            perror("Invalid number of arguments\n");
-            return -1;
-        }
-        cd(args[1]);
-        return 1;
-    }
-
-    if (index == 2){
-        if (numArgs != 1){
-            perror("Invalid number of arguments\n");
-            return -1;
-        }
-        pwd();
-        return 1;
-    }
-
-    if (index == 3){
-        if (numArgs != 2){
-            perror("Invalid number of arguments\n");
-            return -1;
-        }
-        char* pathToExec = BareNameSearch(args[1]);
-
-        if (pathToExec != NULL){
-           write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
-           write(STDOUT_FILENO, "\n", 1);
-        }
-
-        free(pathToExec);
-        return 1;
-    }
-
-    return 0;
 }
 
 void openAndRedirect(char* file, int input_or_output)
 {
     int fd;
+
     if (input_or_output == 1){
-        fd = open(file, O_RDONLY);
+
+        fd = open(file, O_RDONLY); // open file for reading
+
         if (fd == -1){
             perror("Error opening input file");
             exit(EXIT_FAILURE);
         }
+
+        /* duping and closing the old descriptor */
         dup2(fd, STDIN_FILENO);
         close(fd);
+
     }else{
-        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+
+        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0640); // open file for writing
+
         if (fd == -1){
             perror("Error opening output file");
             exit(EXIT_FAILURE);
         }
+
+        /* duping and closing the old descriptor */
         dup2(fd, STDOUT_FILENO);
         close(fd);
+
     }
 }
 
