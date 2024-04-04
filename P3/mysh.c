@@ -87,6 +87,10 @@ int matchPattern (char* pattern, char* file)
     char* ptr1 = pattern;
     char* ptr2 = file;
 
+    if (*ptr1 == '*' && *ptr2 == '.'){
+        return 0;
+    }
+
     while (*ptr1 != '\0' && *ptr2 != '\0'){
         if (*ptr1 == '*'){
             ptr1++;
@@ -165,10 +169,12 @@ GlobExp* ExpandPattern (char* file_pattern){
             }
 
             if (path == NULL){
+
                 pattern_matches->globv[count] = strdup(entry->d_name);
                 count++;
-                continue;
+
             } else {
+
                 size_t path_len = strlen(path);
                 size_t file_len = strlen(entry->d_name);
                 size_t total_path_length = path_len + file_len + 2;
@@ -192,6 +198,29 @@ GlobExp* ExpandPattern (char* file_pattern){
 
     closedir(dir);
     return pattern_matches;
+}
+
+char* dupetoken(char* token)
+{
+    unsigned token_len = strlen(token);
+    if (token[0] == '\"'){
+        token++;
+        token_len--;
+    }
+    if (token[token_len - 1] == '\"'){
+        token_len--;
+    }
+
+    char* dup = (char*) malloc(strlen(token) + 1);
+    if (dup == NULL){
+        perror("Error allocating memory\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    memcpy(dup, token, token_len);
+    dup[token_len] = '\0';
+
+    return dup;
 }
 
 char** tokenize (char* command, int numArgs)
@@ -224,7 +253,7 @@ char** tokenize (char* command, int numArgs)
 
         }
 
-        tokens[i] = strdup(token);
+        tokens[i] = dupetoken(token);
         token = strtok(NULL, " ");
         i++;
     }
@@ -241,6 +270,35 @@ void freeTokens (char** tokens, int numArgs)
     free(tokens);
 }
 
+void exit_program(char* string) {
+    /* We print every argument provided seprated by spaces */
+
+    char delim[] = " \t\r\n\v\f\0|<>";
+
+    int word_len = 0;
+    for (unsigned i = 0; i < strlen(string)+1; i++){
+        if (strchr(delim,string[i]) == NULL){
+            word_len++;
+        } else if (string[i] == '<'){
+            printf("< ");
+            word_len = 0;
+        } else if (string[i] == '>'){
+            printf("> ");
+            word_len = 0;
+        } else if (string[i] == '|'){
+            printf("| ");
+            word_len = 0;
+        } else {
+            if (word_len > 0){
+                write(STDOUT_FILENO, string + i - word_len, word_len);
+                write(STDOUT_FILENO, " ", 1);
+                word_len = 0;
+            }
+        }
+    }
+    write(STDOUT_FILENO, "Exiting shell...\n", 18);
+}
+
 int isBuiltin (char* cmd) 
 {
     if (strcmp (cmd, "cd") == 0) {
@@ -253,6 +311,10 @@ int isBuiltin (char* cmd)
 
     if (strcmp (cmd, "which") == 0){
         return 3;
+    }
+
+    if (strcmp (cmd, "exit") == 0){
+        return 4;
     }
 
     return 0;
@@ -304,6 +366,15 @@ void BuiltInFunctions (char** args, int numArgs, int index)
             free(pathToExec);
             break;
         
+        case 4:
+            for (int i = 1; i < numArgs; i++){
+                write(STDOUT_FILENO, args[i], strlen(args[i]));
+                write(STDOUT_FILENO, " ", 1);
+            }
+
+            exit(EXIT_SUCCESS);
+            break;
+        
         default:
             break;
     }
@@ -349,10 +420,6 @@ char* findExecutable(char* executable)
         path = strdup(executable);
     }else{
         path = BareNameSearch(executable);
-        if (path == NULL){
-            perror("Error finding executable");
-            return NULL;
-        }
     }
     return path;
 }
@@ -437,7 +504,27 @@ void parseCommand(char* command)
         int i;
         if ((i = isBuiltin(tokens[0])) != 0){
 
+            int save_stdout;
+            int save_stdin;
+            if (outputFile != NULL){
+                save_stdout = dup(STDOUT_FILENO);
+                openAndRedirect(outputFile, 0);
+            }
+            if (inputFile != NULL){
+                save_stdin = dup(STDIN_FILENO);
+                openAndRedirect(inputFile, 1);
+            }
+
             BuiltInFunctions(tokens, numArgs[0], i);
+
+            if (outputFile != NULL){
+                dup2(save_stdout, STDOUT_FILENO);
+                close(save_stdout);
+            }
+            if (inputFile != NULL){
+                dup2(save_stdin, STDIN_FILENO);
+                close(save_stdin);
+            }
 
         } else {
 
@@ -563,8 +650,8 @@ void parseCommand(char* command)
             }
 
             if (pid == 0){
-                /* Redirecting pipes before files allows file redirection to take precedence*/
 
+                /* Redirecting pipes before files allows file redirection to take precedence */
                 dup2(pipefd[0], STDIN_FILENO);
                 close(pipefd[0]);
 
@@ -634,17 +721,16 @@ void program(int fd)
                     write(STDOUT_FILENO, "sh> ", 4);
                     continue;
                 }
+
                 string[bytes-1] = '\0';
 
-                if (strcmp(string, "exit") == 0){
-                    // Make exit print all argument it recieves then exit
+                // if (strstr(string, "exit") != 0){
+                //     // Make exit print all argument it recieves then exit
+                //     exit_program(string + 4);
+                //     free(string);
+                //     break;
+                // }
 
-                    write(STDOUT_FILENO, "Exiting shell...\n", 18);
-                    free(string);
-                    break;
-                }
-
-                
                 parseCommand(string);  /* Function to parse the job/command */
 
                 bytes = 0;
@@ -656,6 +742,60 @@ void program(int fd)
         }
     }else{
         /* RUNNING BATCH MODE */
+        
+        int buffer_size = BUFFER_SIZE;
+        char* buffer = (char*) malloc(buffer_size * sizeof(char));
+        
+        int bytes_read;
+        int curr_index;
+        int start_index;
+
+        /* Code for reading lines similar to the one provided by the professor */
+        while ((bytes_read =  read(fd, buffer + curr_index, buffer_size - curr_index)) > 0) {
+            start_index = 0;
+            int buffer_end = curr_index + bytes_read;
+
+            while (curr_index < buffer_end){
+
+                if (buffer[curr_index] == '\n') {
+
+                    buffer[curr_index] = '\0';
+                    parseCommand(buffer + start_index);
+                    start_index = curr_index + 1;
+
+                }
+
+                curr_index++;
+            }
+
+            if (start_index == curr_index) {
+
+                curr_index = 0;
+
+            }else if (start_index > 0) {
+
+                int segment_length = curr_index - start_index;
+                memmove(buffer, buffer + start_index, segment_length);
+                curr_index = segment_length;
+
+            } else if (buffer_end == buffer_size) {
+
+                buffer_size *= 2;
+                buffer = realloc(buffer, buffer_size);
+
+            }
+        }
+
+        if (curr_index > 0) {
+            if (curr_index == buffer_size) {
+                buffer = realloc(buffer, buffer_size + 1);
+            }
+            buffer[curr_index] = '\0';
+            parseCommand(buffer + start_index);
+        }
+
+        free(buffer);
+        
     }
 
 }
@@ -669,13 +809,13 @@ int main(int argc, char* argv[])
     
     if (argc == 2){
         /* BATCH MODE */
-        int batch_fd;
-        if ((batch_fd = open(argv[1], O_RDONLY)) == -1){
+        int batch_file;
+        if ((batch_file = open(argv[1], O_RDONLY)) == -1){
             perror("Error opening file\n");
             exit(EXIT_FAILURE);
         }
 
-        program(batch_fd);
+        program(batch_file);
 
     }else{
         /* INTERACTIVE MODE */
