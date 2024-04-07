@@ -335,11 +335,6 @@ void BuiltInFunctions (char** args, int numArgs, int index)
             break;
 
         case 2:
-            if (numArgs != 1){
-                perror("Invalid number of arguments\n");
-                break;
-            }
-
             char* cwd = getcwd(NULL, 0);
             if (cwd == NULL){
                 perror("Error getting current working directory\n");
@@ -352,18 +347,18 @@ void BuiltInFunctions (char** args, int numArgs, int index)
             break;
 
         case 3:
-            if (numArgs != 2){
-                perror("Invalid number of arguments\n");
-                break;
-            }
-            char* pathToExec = BareNameSearch(args[1]);
 
-            if (pathToExec != NULL){
-            write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
-            write(STDOUT_FILENO, "\n", 1);
+            for (int i = 1; i < numArgs; i++){
+                char* pathToExec = BareNameSearch(args[1]);
+
+                if (pathToExec != NULL){
+                write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
+                write(STDOUT_FILENO, "\n", 1);
+                }
+                free(pathToExec);
             }
 
-            free(pathToExec);
+
             break;
         
         case 4:
@@ -371,7 +366,7 @@ void BuiltInFunctions (char** args, int numArgs, int index)
                 write(STDOUT_FILENO, args[i], strlen(args[i]));
                 write(STDOUT_FILENO, " ", 1);
             }
-
+            write(STDOUT_FILENO, "Exiting shell...\n", 18);
             exit(EXIT_SUCCESS);
             break;
         
@@ -424,7 +419,7 @@ char* findExecutable(char* executable)
     return path;
 }
 
-void parseCommand(char* command)
+int parseCommand(char* command)
 {
     char* inputFile = NULL;
     char* outputFile = NULL;
@@ -532,7 +527,7 @@ void parseCommand(char* command)
 
             if (pathToExec == NULL){
                 perror("Error finding executable");
-                return;
+                return 1;
             }
 
             pid_t pid;
@@ -592,7 +587,7 @@ void parseCommand(char* command)
             char* pathToExec = findExecutable(tokens[0]);
             if (pathToExec == NULL){
                 perror("Error finding executable");
-                return;
+                return 1;
             }
 
             pid_t pid;
@@ -640,7 +635,7 @@ void parseCommand(char* command)
             char* pathToExec = findExecutable(pipetokens[0]);
             if (pathToExec == NULL){
                 perror("Error finding executable");
-                return;
+                return 1;
             }
 
             pid_t pid;
@@ -680,6 +675,8 @@ void parseCommand(char* command)
     if (outputFile) free(outputFile);
     if (pipeInputFile) free(pipeInputFile);
     if (pipeOutputFile) free(pipeOutputFile);
+
+    return exit_status;
     
 }
 
