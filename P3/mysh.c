@@ -270,35 +270,6 @@ void freeTokens (char** tokens, int numArgs)
     free(tokens);
 }
 
-void exit_program(char* string) {
-    /* We print every argument provided seprated by spaces */
-
-    char delim[] = " \t\r\n\v\f\0|<>";
-
-    int word_len = 0;
-    for (unsigned i = 0; i < strlen(string)+1; i++){
-        if (strchr(delim,string[i]) == NULL){
-            word_len++;
-        } else if (string[i] == '<'){
-            printf("< ");
-            word_len = 0;
-        } else if (string[i] == '>'){
-            printf("> ");
-            word_len = 0;
-        } else if (string[i] == '|'){
-            printf("| ");
-            word_len = 0;
-        } else {
-            if (word_len > 0){
-                write(STDOUT_FILENO, string + i - word_len, word_len);
-                write(STDOUT_FILENO, " ", 1);
-                word_len = 0;
-            }
-        }
-    }
-    write(STDOUT_FILENO, "Exiting shell...\n", 18);
-}
-
 int isBuiltin (char* cmd) 
 {
     if (strcmp (cmd, "cd") == 0) {
@@ -366,8 +337,7 @@ void BuiltInFunctions (char** args, int numArgs, int index)
                 write(STDOUT_FILENO, args[i], strlen(args[i]));
                 write(STDOUT_FILENO, " ", 1);
             }
-            write(STDOUT_FILENO, "Exiting shell...\n", 18);
-            exit(EXIT_SUCCESS);
+            write(STDOUT_FILENO, "\n", 1);
             break;
         
         default:
@@ -419,8 +389,32 @@ char* findExecutable(char* executable)
     return path;
 }
 
-int parseCommand(char* command)
+int parseCommand(char* command, int last_return_val)
 {
+    while (*command == ' '){
+        command++;
+    }
+
+    if (strlen(command) == 0){
+        return last_return_val;
+    }
+
+    if (strncmp(command, "then", 4) == 0){
+        if (last_return_val == 0){
+            command += 4;
+        }
+        else {
+            return last_return_val;
+        }
+    } else if (strncmp(command, "else", 4) == 0){
+        if (last_return_val != 0){
+            command += 4;
+        }
+        else {
+            return last_return_val;
+        }
+    }
+
     char* inputFile = NULL;
     char* outputFile = NULL;
     char* pipeInputFile = NULL;
@@ -519,6 +513,11 @@ int parseCommand(char* command)
             if (inputFile != NULL){
                 dup2(save_stdin, STDIN_FILENO);
                 close(save_stdin);
+            }
+
+            if (i == 4){
+                write(STDOUT_FILENO, "Exiting shell...\n", 18);
+                exit(EXIT_SUCCESS);
             }
 
         } else {
@@ -694,6 +693,8 @@ void program(int fd)
         write(STDOUT_FILENO, "Initializing shell...\n", 23);
         write(STDOUT_FILENO, "sh> ", 4);
 
+        int return_val = 0;
+
         // Main loop for reading input from stdin (infinite loop until exit command is given)
         while (1) {
 
@@ -721,22 +722,15 @@ void program(int fd)
 
                 string[bytes-1] = '\0';
 
-                // if (strstr(string, "exit") != 0){
-                //     // Make exit print all argument it recieves then exit
-                //     exit_program(string + 4);
-                //     free(string);
-                //     break;
-                // }
-
-                parseCommand(string);  /* Function to parse the job/command */
+                return_val = parseCommand(string, return_val);
 
                 bytes = 0;
                 free(string);
                 string = NULL;
                 write(STDOUT_FILENO, "sh> ", 4);
-
             }
         }
+
     }else{
         /* RUNNING BATCH MODE */
         
@@ -746,6 +740,7 @@ void program(int fd)
         int bytes_read;
         int curr_index;
         int start_index;
+        int return_val = 0;
 
         /* Code for reading lines similar to the one provided by the professor */
         while ((bytes_read =  read(fd, buffer + curr_index, buffer_size - curr_index)) > 0) {
@@ -757,7 +752,8 @@ void program(int fd)
                 if (buffer[curr_index] == '\n') {
 
                     buffer[curr_index] = '\0';
-                    parseCommand(buffer + start_index);
+
+                    return_val = parseCommand(buffer + start_index, return_val);
                     start_index = curr_index + 1;
 
                 }
@@ -788,7 +784,7 @@ void program(int fd)
                 buffer = realloc(buffer, buffer_size + 1);
             }
             buffer[curr_index] = '\0';
-            parseCommand(buffer + start_index);
+            return_val = parseCommand(buffer + start_index, return_val);
         }
 
         free(buffer);
