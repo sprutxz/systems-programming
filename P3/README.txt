@@ -2,7 +2,7 @@ Leroy Souz (lms548)
 Mannan Shukla (ms3389)
 
 --------------------------------------------------------------------------------
-FIX: grep "Hello World"
+
 DESIGN
 
 Initializing batch or interative mode:
