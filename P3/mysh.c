@@ -79,6 +79,10 @@ char* BareNameSearch (char* executable)
             return pathToExec;
         }
     }
+    for (int i = 0; i < 3; i++){
+        free(path[i]);
+    }
+    free(path);
     return NULL;
 }
 
@@ -134,15 +138,13 @@ GlobExp* ExpandPattern (char* file_pattern){
         path[ptr - file_pattern] = '\0';
 
         if ((dir = opendir(path)) == NULL){
-            perror("Error opening directory\n");
-            exit(EXIT_FAILURE);
+            return pattern_matches;
         }
         
     } else {
 
         if ((dir = opendir(".")) == NULL){
-            perror("Error opening directory\n");
-            exit(EXIT_FAILURE);
+            return pattern_matches;
         }
     }
 
@@ -190,11 +192,7 @@ GlobExp* ExpandPattern (char* file_pattern){
         }
     }
 
-    if (pattern_matches->globc == 0){
-        pattern_matches->globc = 1;
-        pattern_matches->globv = (char**) malloc(sizeof(char*));
-        pattern_matches->globv[0] = strdup(file_pattern);
-    }
+    if (path != NULL) free(path);
 
     closedir(dir);
     return pattern_matches;
@@ -223,9 +221,9 @@ char* dupetoken(char* token)
     return dup;
 }
 
-char** tokenize (char* command, int numArgs)
+char** tokenize (char* command, int* numArgs)
 {
-    char** tokens = (char**) malloc((numArgs + 1) * sizeof(char*));
+    char** tokens = (char**) malloc((*numArgs + 1) * sizeof(char*));
     int i = 0;
 
     char* token = strtok(command, " ");
@@ -234,9 +232,17 @@ char** tokenize (char* command, int numArgs)
 
             GlobExp* pattern_matches = ExpandPattern(token);
 
-            numArgs += pattern_matches->globc - 1;
+            if (pattern_matches->globc == 0){
+                tokens[i] = strdup(token);
+                freeGlobExp(pattern_matches);
+                i++;
+                token = strtok(NULL, " ");
+                continue;
+            }
 
-            tokens = (char**) realloc(tokens, (numArgs + 1) * sizeof(char*));
+            *numArgs += pattern_matches->globc - 1;
+
+            tokens = (char**) realloc(tokens, (*numArgs + 1) * sizeof(char*));
             if (tokens == NULL){
                 perror("Error allocating memory\n");
                 exit(EXIT_FAILURE);
@@ -257,7 +263,7 @@ char** tokenize (char* command, int numArgs)
         token = strtok(NULL, " ");
         i++;
     }
-    tokens[numArgs] = NULL;
+    tokens[*numArgs] = NULL;
 
     return tokens;
 }
@@ -292,45 +298,49 @@ int isBuiltin (char* cmd)
 
 }
 
-void BuiltInFunctions (char** args, int numArgs, int index)
+int BuiltInFunctions (char** args, int numArgs, int index)
 {
     switch(index){
         case 1:
             if (numArgs != 2){
                 perror("Invalid number of arguments\n");
+                return 1;
                 break;
             }
             if (chdir(args[1]) != 0){
                 perror("Error changing directory");
+                return 1;
             }
-            break;
+            return 0;
 
         case 2:
             char* cwd = getcwd(NULL, 0);
             if (cwd == NULL){
                 perror("Error getting current working directory\n");
+                return 1;
             }
 
             write(STDOUT_FILENO, cwd, strlen(cwd));
             write(STDOUT_FILENO, "\n", 1);
             free(cwd);
 
-            break;
+            return 0;
 
         case 3:
 
-            for (int i = 1; i < numArgs; i++){
-                char* pathToExec = BareNameSearch(args[1]);
+            if  (numArgs != 2) return 1;
 
-                if (pathToExec != NULL){
-                write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
-                write(STDOUT_FILENO, "\n", 1);
-                }
-                free(pathToExec);
-            }
+            if (isBuiltin(args[1]) != 0) return 1;
 
+            char* pathToExec = BareNameSearch(args[1]);
 
-            break;
+            if (pathToExec == NULL) return 1;
+
+            write(STDOUT_FILENO, pathToExec, strlen(pathToExec));
+            write(STDOUT_FILENO, "\n", 1);
+            free(pathToExec);
+
+            return 0;
         
         case 4:
             for (int i = 1; i < numArgs; i++){
@@ -338,10 +348,12 @@ void BuiltInFunctions (char** args, int numArgs, int index)
                 write(STDOUT_FILENO, " ", 1);
             }
             write(STDOUT_FILENO, "\n", 1);
-            break;
+            
+            return 0;
         
         default:
-            break;
+            
+            return 1;
     }
 }
 
@@ -485,7 +497,7 @@ int parseCommand(char* command, int last_return_val)
 
     if (pipe_flag == 0){
 
-        char** tokens = tokenize(command, numArgs[0]); // we tokenize the command string to get the arguments
+        char** tokens = tokenize(command, numArgs); // we tokenize the command string to get the arguments
 
         /* We check if the command is a builtin command.
            If builtin then execute in parent else create
@@ -504,7 +516,7 @@ int parseCommand(char* command, int last_return_val)
                 openAndRedirect(inputFile, 1);
             }
 
-            BuiltInFunctions(tokens, numArgs[0], i);
+            exit_status = BuiltInFunctions(tokens, numArgs[0], i);
 
             if (outputFile != NULL){
                 dup2(save_stdout, STDOUT_FILENO);
@@ -558,8 +570,8 @@ int parseCommand(char* command, int last_return_val)
 
     } else { // executed if pipe_flag is set to 1
 
-        char** tokens = tokenize(command, numArgs[0]); // argument list for first job
-        char** pipetokens = tokenize(command + flag + 1, numArgs[1]); // argument list for second job
+        char** tokens = tokenize(command, numArgs); // argument list for first job
+        char** pipetokens = tokenize(command + flag + 1, (numArgs+1)); // argument list for second job
 
         int pipefd[2]; // the pipe
 
@@ -576,7 +588,7 @@ int parseCommand(char* command, int last_return_val)
             dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to the write end of the pipe
             close(pipefd[1]); // Close the write end of the pipe
 
-            BuiltInFunctions(tokens, numArgs[0], i);
+            exit_status = BuiltInFunctions(tokens, numArgs[0], i);
 
             dup2(save_stdout, STDOUT_FILENO); // restoring standard output
             close(save_stdout);
@@ -624,7 +636,7 @@ int parseCommand(char* command, int last_return_val)
             dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to the read end of pipe
             close(pipefd[0]);
 
-            BuiltInFunctions(pipetokens, numArgs[1], i);
+            exit_status = BuiltInFunctions(pipetokens, numArgs[0], i);
 
             dup2(save_stdin, STDIN_FILENO); // restore standard input
             close(save_stdin);
@@ -667,7 +679,7 @@ int parseCommand(char* command, int last_return_val)
         wait(&exit_status);
         wait(&exit_status);
         freeTokens(tokens, numArgs[0]);
-        freeTokens(pipetokens, numArgs[1]);
+        freeTokens(pipetokens, (numArgs[1]));
     }
 
     if (inputFile) free(inputFile);
