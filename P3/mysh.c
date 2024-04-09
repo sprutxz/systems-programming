@@ -413,14 +413,14 @@ int parseCommand(char* command, int last_return_val)
 
     if (strncmp(command, "then", 4) == 0){
         if (last_return_val == 0){
-            command += 4;
+            command += 5;
         }
         else {
             return last_return_val;
         }
     } else if (strncmp(command, "else", 4) == 0){
         if (last_return_val != 0){
-            command += 4;
+            command += 5;
         }
         else {
             return last_return_val;
@@ -748,6 +748,7 @@ void program(int fd)
         
         int buffer_size = BUFFER_SIZE;
         char* buffer = (char*) malloc(buffer_size * sizeof(char));
+        char* buffer_start = buffer;
         
         int bytes_read;
         int curr_index;
@@ -787,6 +788,7 @@ void program(int fd)
 
                 buffer_size *= 2;
                 buffer = realloc(buffer, buffer_size);
+                buffer_start = buffer;
 
             }
         }
@@ -794,12 +796,13 @@ void program(int fd)
         if (curr_index > 0) {
             if (curr_index == buffer_size) {
                 buffer = realloc(buffer, buffer_size + 1);
+                buffer_start = buffer;
             }
             buffer[curr_index] = '\0';
             return_val = parseCommand(buffer + start_index, return_val);
         }
 
-        free(buffer);
+        free(buffer_start);
         
     }
 
