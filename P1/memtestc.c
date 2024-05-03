@@ -10,7 +10,7 @@
 #endif
 
 #define MEMSIZE 4096
-#define HEADERSIZE 8
+#define HEADERSIZE 24
 #define OBJECTS 64
 #define OBJSIZE (MEMSIZE / OBJECTS - HEADERSIZE)
 

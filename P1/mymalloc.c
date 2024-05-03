@@ -111,6 +111,8 @@ void myfree(void *ptr, char *file, int line) {
 
     header* chunk = (header*)((char*)ptr - alignSize(sizeof(header)));
     if (ptr >= (void*)memory && ptr < (void*)(memory + MEMLENGTH)){
+        
+
         if(chunk->size < alignSize(sizeof(header))){
             printf("Error while calling free:\npointer not at the start of chunk (%s:%d)\n", file, line);
             return;
